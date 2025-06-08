@@ -16,6 +16,7 @@ import {
   CircularProgress,
   Paper,
   Collapse,
+  Grid,
 } from "@mui/material";
 import {
   Edit as EditIcon,
@@ -32,6 +33,7 @@ import ImageUploadManager from "./common/ImageUploadManager";
 import { useAuth } from "../context/AuthContext";
 import CreateAnnouncementModal from "./CreateAnnouncementModal";
 import { TELEGRAM_CHATS } from "../config/telegramChats";
+import { formatPostCount } from "../utils/textFormatter";
 
 const EditAnnouncementModal = ({
   isOpen,
@@ -71,7 +73,9 @@ const EditAnnouncementModal = ({
   const [displaySubcategoryName, setDisplaySubcategoryName] = useState("");
   const [isTelegramExpanded, setIsTelegramExpanded] = useState(false);
   const [telegramMessages, setTelegramMessages] = useState([]);
+  const [telegramPostCount, setTelegramPostCount] = useState(0);
   const [loadingTelegramInfo, setLoadingTelegramInfo] = useState(false);
+  const [initialImages, setInitialImages] = useState([]);
 
   const { user, accessToken, refreshToken, login, logout } = useAuth();
   const adId = initialAnnouncement?.id;
@@ -134,13 +138,14 @@ const EditAnnouncementModal = ({
       setContent(initialAnnouncement?.content || "");
       setPrice(initialAnnouncement?.price || "");
       setIsPriceNotSpecified(initialAnnouncement?.price === null);
-      const initialImages =
+      const initialImagesData =
         initialAnnouncement?.images?.map((img, idx) => ({
           ...img,
           url: img.url || img.image_url,
           is_main: idx === 0,
         })) || [];
-      setImages(initialImages);
+      setImages(initialImagesData);
+      setInitialImages(initialImagesData);
       setMainImageIndex(0);
 
       const loadCategoryData = async () => {
@@ -187,7 +192,6 @@ const EditAnnouncementModal = ({
         })
           .then((r) => r.json())
           .then((data) => {
-            console.log("Fetched images from /api/ad-images:", data);
             if (data.images && data.images.length > 0) {
               const fetchedImages = data.images.map((img, idx) => ({
                 ...img,
@@ -195,12 +199,14 @@ const EditAnnouncementModal = ({
                 is_main: idx === 0,
               }));
               setImages(fetchedImages);
+              setInitialImages(fetchedImages);
             }
           })
           .catch((error) => {
             console.error("Error fetching images:", error);
-            if (initialImages.length > 0) {
-              setImages(initialImages);
+            if (initialImagesData.length > 0) {
+              setImages(initialImagesData);
+              setInitialImages(initialImagesData);
             }
           })
           .finally(() => setLoading(false));
@@ -223,6 +229,25 @@ const EditAnnouncementModal = ({
         const data = await response.json();
         if (data.messages) {
           setTelegramMessages(data.messages);
+
+          const distinctPosts = new Set();
+          data.messages.forEach((msg) => {
+            if (msg.media_group_id) {
+              distinctPosts.add(
+                `${msg.chat_id}_${msg.thread_id || "no_thread"}_${
+                  msg.media_group_id
+                }`
+              );
+            } else {
+              distinctPosts.add(
+                `${msg.chat_id}_${msg.thread_id || "no_thread"}_${
+                  msg.message_id
+                }`
+              );
+            }
+          });
+          setTelegramPostCount(distinctPosts.size);
+
           const chatKeys = data.messages
             .map((msg) => {
               const chat = Object.entries(TELEGRAM_CHATS).find(
@@ -254,6 +279,8 @@ const EditAnnouncementModal = ({
     try {
       const formData = prepareFormData();
       const isTelegram = selectedChats.length > 0;
+      const hasImageChanged =
+        JSON.stringify(images) !== JSON.stringify(initialImages);
       const response = await fetchWithRefresh(
         `${API_URL}/ads/${initialAnnouncement.id}`,
         {
@@ -267,7 +294,7 @@ const EditAnnouncementModal = ({
             ...(isTelegram && {
               isTelegram: true,
               selectedChats,
-              telegramUpdateType: "update_text",
+              telegramUpdateType: hasImageChanged ? "repost" : "update_text",
             }),
           }),
         }
@@ -497,10 +524,12 @@ const EditAnnouncementModal = ({
     price: isPriceNotSpecified ? null : price.replace(/\s/g, ""),
     category: category?.id || category?._id,
     subcategory: subcategory?.id || subcategory?._id,
-    images: images.map((img, idx) => ({
-      url: img.url || img.image_url,
-      is_main: idx === mainImageIndex,
-    })),
+    ...(JSON.stringify(images) !== JSON.stringify(initialImages) && {
+      images: images.map((img, idx) => ({
+        url: img.url || img.image_url,
+        is_main: idx === mainImageIndex,
+      })),
+    }),
     status: initialAnnouncement?.status,
   });
 
@@ -595,14 +624,14 @@ const EditAnnouncementModal = ({
               >
                 <TelegramIcon color="primary" />
                 Публикация в Telegram
-                {telegramMessages.length > 0 && (
+                {telegramPostCount > 0 && (
                   <Typography
                     component="span"
                     variant="body2"
                     color="text.secondary"
-                    sx={{ ml: 1 }}
+                    sx={{ ml: 1, whiteSpace: "nowrap" }}
                   >
-                    ({telegramMessages.length} сообщений)
+                    ({formatPostCount(telegramPostCount)})
                   </Typography>
                 )}
               </Typography>
@@ -623,8 +652,6 @@ const EditAnnouncementModal = ({
                 ) : (
                   <Box
                     sx={{
-                      backgroundColor: "background.default",
-                      borderRadius: 1,
                       "& .MuiFormControlLabel-root": {
                         width: "100%",
                         margin: 0,
@@ -650,73 +677,112 @@ const EditAnnouncementModal = ({
           </Paper>
         </Box>
       </DialogContent>
-      <DialogActions>
+      <DialogActions
+        sx={{ flexDirection: "column", alignItems: "stretch", p: 2 }}
+      >
         {!isCreating && (
           <>
             {adStatus === "active" && (
-              <>
-                <Button color="error" onClick={() => setConfirmDelete(true)}>
-                  Удалить
-                </Button>
-                <Button
-                  onClick={() => setConfirmArchive(true)}
-                  disabled={loading}
-                >
-                  Архивировать
-                </Button>
-                <Tooltip title="Продлить срок публикации">
-                  <span>
+              <Grid container spacing={1} sx={{ mb: 1 }}>
+                <Grid item xs={4}>
+                  <Button
+                    fullWidth
+                    color="error"
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    Удалить
+                  </Button>
+                </Grid>
+                <Grid item xs={4}>
+                  <Button
+                    fullWidth
+                    onClick={() => setConfirmArchive(true)}
+                    disabled={loading}
+                  >
+                    Архивировать
+                  </Button>
+                </Grid>
+                <Grid item xs={4}>
+                  <Tooltip title="Продлить срок публикации">
                     <Button
+                      fullWidth
                       onClick={() => setExtendDialogOpen(true)}
                       startIcon={<EventIcon />}
                       disabled={loading}
                     >
                       Продлить
                     </Button>
-                  </span>
-                </Tooltip>
-              </>
+                  </Tooltip>
+                </Grid>
+              </Grid>
             )}
             {adStatus === "archive" && (
-              <>
-                <Button color="error" onClick={() => setConfirmDelete(true)}>
-                  Удалить
-                </Button>
-                <Button
-                  color="primary"
-                  onClick={() => setConfirmRestore(true)}
-                  disabled={loading}
-                >
-                  Выложить
-                </Button>
-              </>
+              <Grid container spacing={1} sx={{ mb: 1 }}>
+                <Grid item xs={6}>
+                  <Button
+                    fullWidth
+                    color="error"
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    Удалить
+                  </Button>
+                </Grid>
+                <Grid item xs={6}>
+                  <Button
+                    fullWidth
+                    color="primary"
+                    onClick={() => setConfirmRestore(true)}
+                    disabled={loading}
+                  >
+                    Выложить
+                  </Button>
+                </Grid>
+              </Grid>
             )}
             {adStatus === "deleted" && (
-              <Button
-                color="primary"
-                onClick={() => setConfirmRestore(true)}
-                disabled={loading}
-              >
-                Выложить
-              </Button>
+              <Grid container spacing={1} sx={{ mb: 1 }}>
+                <Grid item xs={12}>
+                  <Button
+                    fullWidth
+                    color="primary"
+                    onClick={() => setConfirmRestore(true)}
+                    disabled={loading}
+                  >
+                    Выложить
+                  </Button>
+                </Grid>
+              </Grid>
             )}
           </>
         )}
-        <Button onClick={onClose} disabled={loading}>
-          Отмена
-        </Button>
-        {(adStatus === "active" || isCreating) && (
-          <Button
-            color="primary"
-            variant="contained"
-            onClick={
-              customHandleSubmit || (isCreating ? handleCreate : handleSubmit)
-            }
-            disabled={loading || submitting}
-          >
-            {isCreating ? "Создать" : "Сохранить"}
-          </Button>
-        )}
+        <Grid
+          container
+          spacing={1}
+          justifyContent="flex-end"
+          sx={{ width: "100%" }}
+        >
+          <Grid item xs={6}>
+            <Button fullWidth onClick={onClose} disabled={loading}>
+              Отмена
+            </Button>
+          </Grid>
+          {(adStatus === "active" || isCreating) && (
+            <Grid item xs={6}>
+              <Button
+                fullWidth
+                color="primary"
+                variant="contained"
+                onClick={
+                  customHandleSubmit ||
+                  (isCreating ? handleCreate : handleSubmit)
+                }
+                disabled={loading || submitting}
+              >
+                {isCreating ? "Создать" : "Сохранить"}
+              </Button>
+            </Grid>
+          )}
+        </Grid>
       </DialogActions>
       <MuiDialog
         open={extendDialogOpen}

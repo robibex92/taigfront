@@ -59,59 +59,75 @@ const AnnouncementCreationStep = ({
         )}
       />
 
-      <Controller
-        name="isPriceNotSpecified"
-        control={control}
-        render={({ field }) => (
-          <FormControlLabel
-            control={
-              <Checkbox
-                {...field}
-                checked={field.value}
-                onChange={(e) => {
-                  field.onChange(e);
-                  if (e.target.checked) setValue("price", "");
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: { xs: "column", sm: "row" },
+          alignItems: { xs: "flex-start", sm: "center" },
+          gap: { xs: 1, sm: 2 },
+          mt: 2,
+        }}
+      >
+        {!isPriceNotSpecified && (
+          <Controller
+            name="price"
+            control={control}
+            rules={{
+              validate: (value) => {
+                if (isPriceNotSpecified) return true;
+                const cleanValue = value?.replace(/\s/g, "") || "";
+                if (!cleanValue) return "Введите цену";
+                if (!/^\d+$/.test(cleanValue)) return "Только цифры";
+                if (parseInt(cleanValue, 10) < 1)
+                  return "Цена должна быть больше 0";
+                return true;
+              },
+            }}
+            render={({ field, fieldState }) => (
+              <PriceInput
+                price={field.value}
+                onPriceChange={(val) =>
+                  setValue("price", val, { shouldValidate: true })
+                }
+                isPriceNotSpecified={isPriceNotSpecified}
+                onPriceNotSpecifiedChange={(val) => {
+                  setValue("isPriceNotSpecified", val, {
+                    shouldValidate: true,
+                  });
+                  setValue("price", val ? "" : "0", { shouldValidate: true });
                 }}
+                onBlur={field.onBlur}
+                error={!isPriceNotSpecified && !!fieldState.error}
+                helperText={
+                  !isPriceNotSpecified ? fieldState.error?.message : ""
+                }
               />
-            }
-            label="Цена не указана"
+            )}
           />
         )}
-      />
 
-      {!isPriceNotSpecified && (
         <Controller
-          name="price"
+          name="isPriceNotSpecified"
           control={control}
-          rules={{
-            validate: (value) => {
-              if (isPriceNotSpecified) return true;
-              const cleanValue = value?.replace(/\s/g, "") || "";
-              if (!cleanValue) return "Введите цену";
-              if (!/^\d+$/.test(cleanValue)) return "Только цифры";
-              if (parseInt(cleanValue, 10) < 1)
-                return "Цена должна быть больше 0";
-              return true;
-            },
-          }}
-          render={({ field, fieldState }) => (
-            <PriceInput
-              price={field.value}
-              onPriceChange={(val) =>
-                setValue("price", val, { shouldValidate: true })
+          render={({ field }) => (
+            <FormControlLabel
+              control={
+                <Checkbox
+                  {...field}
+                  checked={field.value}
+                  onChange={(e) => {
+                    field.onChange(e);
+                    if (e.target.checked) setValue("price", "");
+                  }}
+                />
               }
-              isPriceNotSpecified={isPriceNotSpecified}
-              onPriceNotSpecifiedChange={(val) => {
-                setValue("isPriceNotSpecified", val, { shouldValidate: true });
-                setValue("price", val ? "" : "0", { shouldValidate: true });
-              }}
-              onBlur={field.onBlur}
-              error={!isPriceNotSpecified && !!fieldState.error}
-              helperText={!isPriceNotSpecified ? fieldState.error?.message : ""}
+              label="Цена не указана"
+              labelPlacement="end"
+              sx={{ whiteSpace: "nowrap" }}
             />
           )}
         />
-      )}
+      </Box>
 
       <Box sx={{ mt: 3 }}>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

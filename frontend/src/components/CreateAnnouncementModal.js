@@ -68,10 +68,6 @@ const CreateAnnouncementModal = ({
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    console.log("CreateAnnouncementModal: Modal open state changed", {
-      isOpen,
-      initialData,
-    });
     if (isOpen) {
       if (!initialData) {
         if (!hasFormBeenResetRef.current) {
@@ -122,14 +118,15 @@ const CreateAnnouncementModal = ({
         const TELEGRAM_CHATS =
           require("../config/telegramChats").TELEGRAM_CHATS;
         setSelectedChats(
-          ADS_ALL.map(
-            (chatObj) =>
-              Object.entries(TELEGRAM_CHATS).find(
-                ([, chat]) =>
-                  chat.id === chatObj.id &&
-                  (chat.threadId || null) === (chatObj.threadId || null)
-              )?.[0]
-          ).filter(Boolean)
+          initialData.selectedChats ||
+            ADS_ALL.map(
+              (chatObj) =>
+                Object.entries(TELEGRAM_CHATS).find(
+                  ([, chat]) =>
+                    chat.id === chatObj.id &&
+                    (chat.threadId || null) === (chatObj.threadId || null)
+                )?.[0]
+            ).filter(Boolean)
         );
         hasFormBeenResetRef.current = true;
       }
@@ -152,11 +149,6 @@ const CreateAnnouncementModal = ({
         return;
       }
 
-      console.log("CreateAnnouncementModal: Checking pending images", {
-        hasPendingFiles:
-          imageUploadManagerRef.current?.hasPendingFiles?.() || false,
-      });
-
       // Загружаем ожидающие изображения, если они есть
       let updatedImages = getValues().images || [];
       if (imageUploadManagerRef.current?.hasPendingFiles()) {
@@ -168,9 +160,7 @@ const CreateAnnouncementModal = ({
         try {
           updatedImages =
             await imageUploadManagerRef.current.uploadPendingFiles();
-          console.log("CreateAnnouncementModal: Images uploaded", {
-            updatedImages,
-          });
+
           setValue("images", updatedImages, { shouldValidate: true });
         } catch (uploadError) {
           console.error(
@@ -189,18 +179,40 @@ const CreateAnnouncementModal = ({
 
       // Получаем актуальные значения формы после загрузки
       const formValues = getValues();
-      console.log("CreateAnnouncementModal: Form values after upload", {
-        formValues,
-      });
 
-      const allImages = updatedImages.map((img, idx) => ({
-        url: img.url || img.image_url,
-        is_main: idx === mainImageIndex,
-      }));
+      // Фильтруем изображения, исключая те, у которых нет URL
+      const allImages = updatedImages
+        .filter((img) => img.url || img.image_url)
+        .map((img, idx) => ({
+          url: img.url || img.image_url,
+          is_main: idx === mainImageIndex,
+        }));
 
       const isTelegram = selectedChats && selectedChats.length > 0;
       const isEdit = !!initialData?.id;
       const apiUrl = `${API_URL}/ads${isEdit ? `/${initialData.id}` : ""}`;
+
+      // Определяем telegramUpdateType
+      let telegramUpdateType = "update_text";
+      if (isEdit) {
+        // Сравниваем images
+        const initialImages = (initialData.images || [])
+          .map((img) => img.url || img.image_url)
+          .sort();
+        const newImages = allImages.map((img) => img.url).sort();
+        const imagesChanged =
+          JSON.stringify(initialImages) !== JSON.stringify(newImages);
+
+        // Сравниваем selectedChats
+        const initialChats = (initialData.selectedChats || []).sort();
+        const newChats = selectedChats.sort();
+        const chatsChanged =
+          JSON.stringify(initialChats) !== JSON.stringify(newChats);
+
+        if (imagesChanged || chatsChanged) {
+          telegramUpdateType = "repost";
+        }
+      }
 
       const requestData = {
         user_id: authUser.user_id,
@@ -216,11 +228,9 @@ const CreateAnnouncementModal = ({
         ...(isTelegram && {
           isTelegram,
           selectedChats,
-          ...(isEdit && { telegramUpdateType: "update_text" }),
+          ...(isEdit && { telegramUpdateType }),
         }),
       };
-
-      console.log("CreateAnnouncementModal: Sending request", { requestData });
 
       const response = await fetch(apiUrl, {
         method: isEdit ? "PATCH" : "POST",
@@ -302,9 +312,6 @@ const CreateAnnouncementModal = ({
               imageUploadManagerRef={imageUploadManagerRef}
               images={getValues().images || []}
               onImagesChange={(newImages) => {
-                console.log("CreateAnnouncementModal: onImagesChange called", {
-                  newImages,
-                });
                 setValue("images", newImages, { shouldValidate: true });
               }}
               mainImageIndex={mainImageIndex}
@@ -313,10 +320,7 @@ const CreateAnnouncementModal = ({
                 const updatedImages = getValues().images.filter(
                   (_, i) => i !== index
                 );
-                console.log("CreateAnnouncementModal: Removing image", {
-                  index,
-                  updatedImages,
-                });
+
                 setValue("images", updatedImages, { shouldValidate: true });
                 if (mainImageIndex === index) setMainImageIndex(0);
                 else if (mainImageIndex > index)

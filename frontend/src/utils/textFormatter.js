@@ -23,3 +23,24 @@ export function applyFormat(text, tag) {
   // A better approach would be to manipulate the DOM nodes within the range.
   return text.replace(selectedText, `<${tag}>${selectedText}</${tag}>`);
 }
+
+/**
+ * Formats the count of posts with correct Russian pluralization.
+ * @param {number} count - The number of posts.
+ * @returns {string} The formatted string (e.g., "1 пост", "2 поста", "5 постов").
+ */
+export function formatPostCount(count) {
+  const lastDigit = count % 10;
+  const lastTwoDigits = count % 100;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
+    return `${count} постов`;
+  }
+  if (lastDigit === 1) {
+    return `${count} пост`;
+  }
+  if (lastDigit >= 2 && lastDigit <= 4) {
+    return `${count} поста`;
+  }
+  return `${count} постов`;
+}

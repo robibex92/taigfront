@@ -84,7 +84,7 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
     message: "",
     severity: "success",
   });
-  const { accessToken } = useAuth();
+  const { accessToken, refreshToken, login } = useAuth();
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [uploadQueue, setUploadQueue] = useState([]);
   const [activeUploads, setActiveUploads] = useState(0);
@@ -92,14 +92,11 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
   const isMounted = useRef(true);
 
   useEffect(() => {
-    console.log("ImageUploadManager: Mounted");
     isMounted.current = true;
     return () => {
-      console.log("ImageUploadManager: Unmounting");
       isMounted.current = false;
       localImages.forEach((img) => {
         if (img.url && img.url.startsWith("blob:")) {
-          console.log("Revoking blob URL:", img.url);
           URL.revokeObjectURL(img.url);
         }
       });
@@ -109,7 +106,6 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
           file.preview.url &&
           file.preview.url.startsWith("blob:")
         ) {
-          console.log("Revoking pending file blob URL:", file.preview.url);
           URL.revokeObjectURL(file.preview.url);
         }
       });
@@ -122,7 +118,6 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
   }, []);
 
   useEffect(() => {
-    console.log("ImageUploadManager: Initial load effect", { id, type });
     if (!id || !isMounted.current) return;
     setInitialLoadComplete(false);
     setLoading(true);
@@ -135,16 +130,14 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
       .then((r) => r.json())
       .then((data) => {
         if (!isMounted.current) {
-          console.log("ImageUploadManager: Component unmounted during fetch");
           return;
         }
-        console.log("ImageUploadManager: Fetch images success", data);
         if (data.images && data.images.length > 0) {
           const fixedImages = data.images.map((img, idx) => ({
             ...img,
             url: img.url || img.image_url,
             is_main: idx === 0,
-            is_pending: false,
+            file: null, // Ensure file is null for fetched images
           }));
           setLocalImages(fixedImages);
           onImagesChange(fixedImages);
@@ -163,7 +156,6 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
       })
       .finally(() => {
         if (!isMounted.current) return;
-        console.log("ImageUploadManager: Initial load complete");
         setLoading(false);
         setInitialLoadComplete(true);
       });
@@ -172,10 +164,6 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
   const memoizedPropImages = useMemo(() => propImages, [propImages]);
 
   useEffect(() => {
-    console.log("ImageUploadManager: Prop images effect", {
-      propImages: memoizedPropImages,
-      id,
-    });
     if (!id && memoizedPropImages.length > 0) {
       if (JSON.stringify(localImages) !== JSON.stringify(memoizedPropImages)) {
         setLocalImages(memoizedPropImages);
@@ -187,159 +175,162 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
   useImperativeHandle(ref, () => ({
     uploadPendingFiles,
     hasPendingFiles: () => {
-      console.log("ImageUploadManager: hasPendingFiles", {
-        pendingFilesLength: pendingFiles.length,
-      });
       return pendingFiles.length > 0;
     },
   }));
 
   const processUploadQueue = async () => {
-    console.log("ImageUploadManager: Processing queue", {
-      uploadQueueLength: uploadQueue.length,
-      activeUploads,
-      isMounted: isMounted.current,
-    });
     if (
       !isMounted.current ||
       activeUploads >= MAX_CONCURRENT_UPLOADS ||
       uploadQueue.length === 0
     ) {
-      console.log("ImageUploadManager: Queue processing stopped", {
-        isMounted: isMounted.current,
-        activeUploads,
-        queueLength: uploadQueue.length,
-      });
       return;
     }
 
     const nextFile = uploadQueue[0];
-    setUploadQueue((prev) => {
-      console.log("ImageUploadManager: Removing file from queue", {
-        file: nextFile.file.name,
-      });
-      return prev.slice(1);
-    });
-    setActiveUploads((prev) => {
-      console.log("ImageUploadManager: Incrementing active uploads", {
-        newActiveUploads: prev + 1,
-      });
-      return prev + 1;
-    });
+    setUploadQueue((prev) => prev.slice(1));
+    setActiveUploads((prev) => prev + 1);
 
-    try {
-      console.log("ImageUploadManager: Uploading file", {
-        file: nextFile.file.name,
-      });
+    const uploadWithToken = async (token) => {
       const formData = new FormData();
       formData.append("photos", nextFile.file, nextFile.file.name);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.log("ImageUploadManager: Upload timeout", {
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      try {
+        const res = await fetch(`${API_URL}/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (!isMounted.current) return;
+
+        if (res.status === 401) {
+          throw new Error("TOKEN_EXPIRED");
+        }
+
+        if (!res.ok) {
+          console.error("ImageUploadManager: Upload failed", {
+            status: res.status,
+          });
+          throw new Error("Failed to upload image");
+        }
+
+        let responseData, uploadedUrl;
+        try {
+          responseData = await res.json();
+          uploadedUrl = responseData.fileUrls?.[0];
+        } catch (e) {
+          console.error(
+            "ImageUploadManager: Failed to parse upload response",
+            e
+          );
+          throw new Error("Invalid server response");
+        }
+
+        if (!uploadedUrl) {
+          throw new Error("No URL returned from server");
+        }
+
+        if (!isMounted.current) return;
+
+        setLocalImages((prev) => {
+          const newImages = prev.map((img) =>
+            img.file === nextFile.file
+              ? {
+                  ...img,
+                  url: uploadedUrl,
+                  image_url: uploadedUrl,
+                  file: null,
+                }
+              : img
+          );
+          onImagesChange(newImages);
+          return newImages;
+        });
+
+        setPendingFiles((prev) => prev.filter((f) => f !== nextFile.file));
+      } catch (error) {
+        if (!isMounted.current) return;
+
+        if (error.message === "TOKEN_EXPIRED" && refreshToken) {
+          try {
+            // Try to refresh the token
+            const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${refreshToken}` },
+            });
+
+            if (!refreshRes.ok) {
+              throw new Error("REFRESH_FAILED");
+            }
+
+            let newAccessToken, newRefreshToken;
+            try {
+              const refreshData = await refreshRes.json();
+              newAccessToken = refreshData.accessToken;
+              newRefreshToken = refreshData.refreshToken;
+            } catch (e) {
+              console.error(
+                "ImageUploadManager: Failed to parse refresh response",
+                e
+              );
+              throw new Error("Invalid refresh response");
+            }
+
+            // Update auth context with new tokens
+            await login(newAccessToken, newRefreshToken);
+
+            // Retry upload with new token
+            return uploadWithToken(newAccessToken);
+          } catch (refreshError) {
+            console.error(
+              "ImageUploadManager: Token refresh failed",
+              refreshError
+            );
+            setSnackbar({
+              open: true,
+              message: "Сессия истекла. Пожалуйста, перезайдите в систему.",
+              severity: "error",
+            });
+            throw refreshError;
+          }
+        }
+
+        console.error("ImageUploadManager: Error uploading file", {
+          error,
           file: nextFile.file.name,
         });
-        controller.abort();
-      }, 10000);
-      const res = await fetch(`${API_URL}/upload`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: formData,
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!isMounted.current) {
-        console.log("ImageUploadManager: Component unmounted during upload");
-        return;
-      }
-
-      if (!res.ok) {
-        console.error("ImageUploadManager: Upload failed", {
-          status: res.status,
+        setSnackbar({
+          open: true,
+          message: `Ошибка загрузки ${nextFile.file.name}`,
+          severity: "error",
         });
-        throw new Error("Failed to upload image");
       }
+    };
 
-      const responseData = await res.json();
-      const uploadedUrl = responseData.fileUrls?.[0];
-      console.log("ImageUploadManager: Upload response", { uploadedUrl });
-
-      if (!uploadedUrl) {
-        console.error("ImageUploadManager: No URL returned from server");
-        throw new Error("No URL returned from server");
-      }
-
-      if (!isMounted.current) return;
-
-      setLocalImages((prev) => {
-        const newImages = prev.map((img) =>
-          img.file === nextFile.file
-            ? {
-                ...img,
-                url: uploadedUrl,
-                image_url: uploadedUrl,
-                is_pending: false,
-                file: null,
-              }
-            : img
-        );
-        console.log("ImageUploadManager: Updated localImages", { newImages });
-        onImagesChange(newImages.filter((img) => !img.is_pending));
-        return newImages;
-      });
-
-      setPendingFiles((prev) => {
-        const newPending = prev.filter((f) => f !== nextFile.file);
-        console.log("ImageUploadManager: Updated pendingFiles", {
-          newPendingLength: newPending.length,
-        });
-        return newPending;
-      });
-    } catch (error) {
-      if (!isMounted.current) return;
-      console.error("ImageUploadManager: Error uploading file", {
-        error,
-        file: nextFile.file.name,
-      });
-      setSnackbar({
-        open: true,
-        message: `Ошибка загрузки ${nextFile.file.name}`,
-        severity: "error",
-      });
+    try {
+      await uploadWithToken(accessToken);
     } finally {
       if (isMounted.current) {
-        setActiveUploads((prev) => {
-          console.log("ImageUploadManager: Decrementing active uploads", {
-            newActiveUploads: prev - 1,
-          });
-          return prev - 1;
-        });
+        setActiveUploads((prev) => prev - 1);
       }
     }
   };
 
   useEffect(() => {
-    console.log("ImageUploadManager: Queue processing effect", {
-      uploadQueueLength: uploadQueue.length,
-      activeUploads,
-    });
     if (uploadQueue.length > 0 && activeUploads < MAX_CONCURRENT_UPLOADS) {
       processUploadQueue();
     }
   }, [uploadQueue, activeUploads]);
 
   const handleFiles = async (files) => {
-    console.log("ImageUploadManager: Handling files", {
-      fileCount: files.length,
-    });
-    if (
-      !files.length ||
-      localImages.length + pendingFiles.length + files.length > maxImages
-    ) {
-      console.log("ImageUploadManager: Max images limit reached", {
-        maxImages,
-      });
+    if (localImages.length + pendingFiles.length + files.length > maxImages) {
       setSnackbar({
         open: true,
         message: `Можно загрузить максимум ${maxImages} изображений`,
@@ -356,7 +347,12 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
           file.name?.toLowerCase().endsWith(".heif") ||
           file.type === "image/heic" ||
           file.type === "image/heif";
-        if (isHeic) {
+        const isJfif =
+          file.name?.toLowerCase().endsWith(".jfif") ||
+          (file.type === "image/jpeg" &&
+            !file.name.toLowerCase().endsWith(".jpg")); // Дополнительная проверка
+
+        if (isHeic || isJfif) {
           try {
             const convertedBlob = await heic2any({
               blob: file,
@@ -365,15 +361,12 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
             });
             const convertedFile = new File(
               [convertedBlob],
-              file.name.replace(/\.(heic|heif)$/i, ".jpg"),
+              file.name.replace(/\.(heic|heif|jfif)$/i, ".jpg"),
               { type: "image/jpeg" }
             );
-            console.log("ImageUploadManager: Converted HEIC file", {
-              file: convertedFile.name,
-            });
             return convertedFile;
           } catch (e) {
-            console.error("ImageUploadManager: HEIC conversion failed", {
+            console.error("ImageUploadManager: Conversion failed", {
               file: file.name,
               error: e,
             });
@@ -390,70 +383,56 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
     ).then((files) => files.filter(Boolean));
 
     if (!validFiles.length) {
-      console.log("ImageUploadManager: No valid files to process");
       return;
     }
 
-    const newImages = [];
+    const newImagesToAdd = [];
     validFiles.forEach((file) => {
       if (
         pendingFiles.some((f) => f.name === file.name && f.size === file.size)
       ) {
-        console.log("ImageUploadManager: Skipping duplicate file", {
-          file: file.name,
-        });
         return;
       }
       const blobUrl = URL.createObjectURL(file);
       const preview = {
         url: blobUrl,
-        is_main: localImages.length === 0,
+        is_main: localImages.length === 0 && newImagesToAdd.length === 0,
         id: null,
-        is_pending: true,
         file: file,
         blobUrl: blobUrl,
       };
-      console.log("ImageUploadManager: Adding file to queue", {
-        file: file.name,
-        blobUrl,
-      });
-      setLocalImages((prev) => [...prev, preview]);
-      setPendingFiles((prev) => [...prev, file]);
-      setUploadQueue((prev) => [...prev, { file, preview }]);
-      newImages.push({
-        url: blobUrl,
-        is_main: localImages.length === 0,
-        id: null,
-        is_pending: true,
-        file: file,
-      });
+
+      newImagesToAdd.push(preview);
     });
 
-    if (newImages.length > 0) {
-      onImagesChange([...localImages, ...newImages]);
+    setLocalImages((prev) => [...prev, ...newImagesToAdd]);
+    setPendingFiles((prev) => [...prev, ...validFiles]);
+    setUploadQueue((prev) => [
+      ...prev,
+      ...newImagesToAdd.map((img) => ({ file: img.file, preview: img })),
+    ]);
+
+    if (newImagesToAdd.length > 0) {
+      onImagesChange([...localImages, ...newImagesToAdd]);
     }
   };
 
   const handleInputChange = (e) => {
-    console.log("ImageUploadManager: Input change detected");
     if (e.target.files && e.target.files[0]) {
       handleFiles(e.target.files);
     }
   };
 
   const handleDelete = async (index) => {
-    console.log("ImageUploadManager: Deleting image", { index });
     const imageToDelete = localImages[index];
     setLoading(true);
     try {
       if (imageToDelete?.url && imageToDelete.url.startsWith("blob:")) {
-        console.log("ImageUploadManager: Revoking blob URL for deletion", {
-          url: imageToDelete.url,
-        });
         URL.revokeObjectURL(imageToDelete.url);
       }
 
-      if (imageToDelete?.is_pending && imageToDelete.url.startsWith("blob:")) {
+      // If it's a pending image (has a file reference and no ID yet)
+      if (imageToDelete?.file !== null && !imageToDelete.id) {
         setPendingFiles((prev) =>
           prev.filter((file) => file !== imageToDelete.file)
         );
@@ -463,17 +442,12 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
         const updatedImages = localImages.filter((_, i) => i !== index);
         setLocalImages(updatedImages);
         onImagesChange(updatedImages);
-        console.log("ImageUploadManager: Deleted pending image", {
-          updatedImagesLength: updatedImages.length,
-        });
+
         return;
       }
 
+      // If it's an uploaded image (has an ID)
       if (imageToDelete?.id && id) {
-        console.log("ImageUploadManager: Sending delete request to server", {
-          imageId: imageToDelete.id,
-          adId: id,
-        });
         const response = await fetch(`${API_URL}/ads/delete-image`, {
           method: "POST",
           headers: {
@@ -495,9 +469,6 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
       const updatedImages = localImages.filter((_, i) => i !== index);
       setLocalImages(updatedImages);
       onImagesChange(updatedImages);
-      console.log("ImageUploadManager: Image deleted", {
-        updatedImagesLength: updatedImages.length,
-      });
     } catch (error) {
       console.error("ImageUploadManager: Error deleting image", { error });
       setSnackbar({
@@ -511,7 +482,6 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
   };
 
   const handleSetMain = (index) => {
-    console.log("ImageUploadManager: Setting main image", { index });
     const updatedImages = localImages.map((img, idx) => ({
       ...img,
       is_main: idx === index,
@@ -521,41 +491,30 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
   };
 
   const uploadPendingFiles = async () => {
-    console.log("ImageUploadManager: uploadPendingFiles called", {
-      pendingFilesLength: pendingFiles.length,
-    });
     if (pendingFiles.length === 0) {
-      console.log("ImageUploadManager: No pending files to upload");
-      return localImages.filter((img) => !img.is_pending);
+      return localImages.filter((img) => img.file === null); // Return only uploaded images
     }
 
     while (uploadQueue.length > 0 || activeUploads > 0) {
-      console.log("ImageUploadManager: Waiting for queue to complete", {
-        uploadQueueLength: uploadQueue.length,
-        activeUploads,
-      });
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
-    console.log("ImageUploadManager: Uploads completed", { localImages });
-    return localImages.filter((img) => !img.is_pending);
+    return localImages.filter((img) => img.file === null); // Return only uploaded images
   };
 
   const handleDragOver = (e) => {
     e.preventDefault();
-    console.log("ImageUploadManager: Drag over");
+
     setDragActive(true);
   };
 
   const handleDragLeave = (e) => {
     e.preventDefault();
-    console.log("ImageUploadManager: Drag leave");
     setDragActive(false);
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
-    console.log("ImageUploadManager: Drop files");
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFiles(e.dataTransfer.files);
@@ -564,18 +523,16 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
 
   const renderImage = useCallback(
     (img, idx) => {
-      console.log("ImageUploadManager: Rendering image", {
-        index: idx,
-        url: img.url,
-        isPending: img.is_pending,
-      });
+      // An image is pending if its `file` property is not null.
+      const isCurrentlyPending = img.file !== null;
+
       return (
         <ImageThumb
-          key={`${img.id || "pending"}-${img.url}-${idx}`}
+          key={img.id || img.url} // Use a more stable key, prefer id for uploaded, then url for pending
           selected={img.is_main}
         >
           <ThumbImg src={img.url} alt={`Объявление ${idx + 1}`} />
-          {img.is_pending && (
+          {isCurrentlyPending && ( // Show loader based on derived state
             <CircularProgress
               size={24}
               sx={{
@@ -629,13 +586,13 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
         </ImageThumb>
       );
     },
-    [localImages.length]
+    [localImages, pendingFiles, uploadQueue] // Dependencies for useCallback
   );
 
   return (
     <Box width="100%" sx={{ mt: 2 }}>
       <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start" }}>
-        {localImages.length + pendingFiles.length < maxImages && (
+        {localImages.length < maxImages && ( // Only show if not maxed out
           <DropZone
             isdragactive={dragActive ? 1 : 0}
             onDragOver={handleDragOver}
@@ -661,7 +618,8 @@ const ImageUploadManager = forwardRef(function ImageUploadManager(
         )}
         {localImages.map(renderImage)}
       </Box>
-      {loading && <CircularProgress sx={{ mt: 2 }} />}
+      {loading && <CircularProgress sx={{ mt: 2 }} />}{" "}
+      {/* This `loading` is for overall component loading (e.g. initial fetch), not per-image upload */}
       <Snackbar
         open={snackbar.open}
         autoHideDuration={6000}

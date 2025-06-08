@@ -11,7 +11,6 @@ import Snackbar from "@mui/material/Snackbar";
 import Alert from "@mui/material/Alert";
 import Typography from "@mui/material/Typography";
 import { API_URL } from "../config/config";
-import { applyFormat } from "../utils/textFormatter";
 import { useAuth } from "../context/AuthContext";
 
 export default function MessageDialog({
@@ -42,24 +41,10 @@ export default function MessageDialog({
     }`;
   }
 
-  const handleFormat = (tag) => {
-    setMessage((prev) => applyFormat(prev, tag));
-  };
-
   const handleSend = async () => {
     if (!isAuthenticated) {
       setError("Вы должны быть авторизованы для отправки сообщений");
       return;
-    }
-
-    let senderInfo = "";
-    if (user?.user_id) {
-      // Используем HTML-разметку для ссылки
-      senderInfo = `\n\nОт: <a href="tg://user?id=${user.user_id}">ID ${user.user_id}</a>`;
-    } else if (user?.username) {
-      senderInfo = `\n\nОт: @${user.username}`;
-    } else if (user?.first_name) {
-      senderInfo = `\n\nОт: ${user.first_name}`;
     }
 
     if (!message.trim()) {
@@ -79,10 +64,10 @@ export default function MessageDialog({
         },
         body: JSON.stringify({
           chat_id,
-          message: message + senderInfo, // Добавляем информацию об отправителе
-          parse_mode: "HTML", // Указываем, что используем HTML-разметку
+          message,
           contextType,
           contextData,
+          parse_mode: "HTML",
         }),
       });
 

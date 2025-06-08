@@ -106,24 +106,31 @@ export const AuthProvider = ({ children }) => {
       return;
     }
 
-    // Явный выбор полей пользователя для сохранения во фронтенд состоянии
-    // Убедитесь, что эти поля соответствуют безопасным данным, возвращаемым бэкендом (/auth/session)
-    const userToSave = {
-      user_id: userData.user_id,
-      username: userData.username,
-      first_name: userData.first_name,
-      last_name: userData.last_name,
-      avatar: userData.avatar,
-      status: userData.status, // Ensure status is saved if needed
-      telegram_first_name: userData.telegram_first_name,
-      telegram_last_name: userData.telegram_last_name,
-      is_manually_updated: userData.is_manually_updated,
-    };
+    if (!userData) {
+      // Если userData равно null, очищаем информацию о пользователе
+      setUser(null);
+      localStorage.removeItem("user");
+    } else {
+      // Явный выбор полей пользователя для сохранения во фронтенд состоянии
+      // Убедитесь, что эти поля соответствуют безопасным данным, возвращаемым бэкендом (/auth/session)
+      const userToSave = {
+        user_id: userData.user_id,
+        username: userData.username,
+        first_name: userData.first_name,
+        last_name: userData.last_name,
+        avatar: userData.avatar,
+        status: userData.status, // Ensure status is saved if needed
+        telegram_first_name: userData.telegram_first_name,
+        telegram_last_name: userData.telegram_last_name,
+        is_manually_updated: userData.is_manually_updated,
+      };
 
-    setUser(userToSave);
+      setUser(userToSave);
+      localStorage.setItem("user", JSON.stringify(userToSave));
+    }
+
     setAccessToken(token);
     setRefreshToken(refresh);
-    localStorage.setItem("user", JSON.stringify(userToSave));
     localStorage.setItem("accessToken", token);
     localStorage.setItem("refreshToken", refresh);
   };

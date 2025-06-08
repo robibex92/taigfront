@@ -11,7 +11,6 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { API_URL } from "../config/config";
-import TelegramLoginButton from "react-telegram-login";
 import { useAuth } from "../context/AuthContext";
 
 // Кэш для FAQ
@@ -47,6 +46,8 @@ const FAQ = () => {
   const [loading, setLoading] = useState(!getCachedFAQs());
   const [error, setError] = useState(null);
   const { user, login } = useAuth();
+  const [tokenAuthLoading, setTokenAuthLoading] = useState(false);
+  const [tokenAuthError, setTokenAuthError] = useState(null);
 
   const loadFAQ = useCallback(async (force = false) => {
     // Если есть кэш и не требуется принудительное обновление, используем его
@@ -101,37 +102,53 @@ const FAQ = () => {
     setExpanded(isExpanded ? panel : false);
   };
 
-  const onAuth = async (telegramUser) => {
+  const handleAuthorizeWithRefreshToken = async () => {
+    setTokenAuthLoading(true);
+    setTokenAuthError(null);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const refreshToken =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjI0NTk0NjY3MCIsImlhdCI6MTc0OTM2ODE4OSwiZXhwIjoxNzUxOTYwMTg5fQ.OI-w2EbbmNodP8a86cjuwEEikK3u92pCawzuGOcPcLk"; // User provided refreshToken
 
-      const response = await fetch(`${API_URL}/auth/telegram`, {
+      const response = await fetch(`${API_URL}/auth/refresh`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${refreshToken}`,
         },
-        body: JSON.stringify({
-          telegram_token: telegramUser.hash,
-          user_data: telegramUser,
-        }),
-        signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
-        throw new Error("Failed to authenticate with Telegram");
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to refresh token");
       }
 
       const data = await response.json();
-      login(data.user, data.accessToken, data.refreshToken);
-    } catch (error) {
-      if (error.name === "AbortError") {
-        alert("Превышено время ожидания ответа от сервера");
-      } else {
-        alert("Ошибка при авторизации через Telegram");
+      const newAccessToken = data.accessToken;
+      const newRefreshToken = data.refreshToken;
+
+      // Fetch user data using the new accessToken
+      const sessionResponse = await fetch(`${API_URL}/auth/session`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${newAccessToken}`,
+        },
+      });
+
+      if (!sessionResponse.ok) {
+        const errorData = await sessionResponse.json();
+        throw new Error(errorData.error || "Failed to fetch user session");
       }
+
+      const userData = await sessionResponse.json();
+
+      // Now call login with the fetched user data and new tokens
+      login(userData, newAccessToken, newRefreshToken);
+      alert("Авторизация прошла успешно!");
+    } catch (error) {
+      console.error("Ошибка при авторизации токеном:", error);
+      setTokenAuthError(error.message);
+    } finally {
+      setTokenAuthLoading(false);
     }
   };
 
@@ -148,13 +165,23 @@ const FAQ = () => {
         <Typography variant="h4">Часто задаваемые вопросы</Typography>
         {!user && (
           <Box sx={{ display: "flex", alignItems: "center" }}>
-            <TelegramLoginButton
-              botName={process.env.REACT_APP_TELEGRAM_BOT_NAME}
-              dataOnauth={onAuth}
-              buttonSize="large"
-              cornerRadius={8}
-              requestAccess={true}
-            />
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={handleAuthorizeWithRefreshToken}
+              disabled={tokenAuthLoading}
+            >
+              {tokenAuthLoading ? (
+                <CircularProgress size={24} color="inherit" />
+              ) : (
+                "Авторизоваться для тестов"
+              )}
+            </Button>
+            {tokenAuthError && (
+              <Alert severity="error" sx={{ ml: 2 }}>
+                {tokenAuthError}
+              </Alert>
+            )}
           </Box>
         )}
       </div>
